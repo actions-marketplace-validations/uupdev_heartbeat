@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start local test server
+        run: |
+          python3 -c '
+          import http.server, threading, time
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/hb/ok-token":
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b"ok")
+                  else:
+                      self.send_response(404)
+                      self.end_headers()
+                      self.wfile.write(b"unknown token")
+              def log_message(self, *args):
+                  pass
+          server = http.server.HTTPServer(("127.0.0.1", 18923), Handler)
+          server.serve_forever()
+          ' &
+          for _ in $(seq 1 20); do
+            curl -s http://127.0.0.1:18923/hb/ok-token >/dev/null && break
+            sleep 0.1
+          done
+
+      - name: Skips cleanly when URL is unset
+        id: skip_case
+        uses: ./
+        with:
+          url: ""
+
+      - name: Assert skipped output
+        run: test "${{ steps.skip_case.outputs.status }}" = "skipped"
+
+      - name: Sends signal when URL returns 200
+        id: ok_case
+        uses: ./
+        with:
+          url: "http://127.0.0.1:18923/hb/ok-token"
+
+      - name: Assert sent output
+        run: test "${{ steps.ok_case.outputs.status }}" = "sent"
+
+      - name: Reads fallback UUP_HEARTBEAT_URL environment variable
+        id: env_case
+        uses: ./
+        env:
+          UUP_HEARTBEAT_URL: "http://127.0.0.1:18923/hb/ok-token"
+
+      - name: Assert env sent output
+        run: test "${{ steps.env_case.outputs.status }}" = "sent"
+
+      - name: Warns without failing job by default on 404
+        id: warn_case
+        uses: ./
+        with:
+          url: "http://127.0.0.1:18923/hb/missing"
+          retries: "0"
+
+      - name: Assert failed output without failing step
+        run: test "${{ steps.warn_case.outputs.status }}" = "failed"
